@@ -5,6 +5,15 @@ import pandas as pd
 from datetime import datetime
 import re
 import logging
+import locale
+import zipfile  # Para criar o arquivo ZIP
+from io import BytesIO  # Para manipular arquivos na memória
+
+# Configuração do locale para português do Brasil
+try:
+    locale.setlocale(locale.LC_TIME, 'pt_BR.UTF-8')  # Linux/Mac
+except locale.Error:
+    locale.setlocale(locale.LC_TIME, 'Portuguese_Brazil.1252')  # Windows
 
 # Configuração do log
 logging.basicConfig(
@@ -65,14 +74,35 @@ def fetch_diarios(page):
         logging.error(f"Erro ao acessar API na página {page}: {str(e)}")
     return None
 
+# Função para converter datas com suporte a diferentes formatos
+def converter_data(data_str):
+    """
+    Tenta converter uma string de data para um objeto datetime.
+    Aceita diferentes formatos de data e registra erros se a conversão falhar.
+    """
+    formatos = [
+        '%A, %d de %B de %Y',  # Com dia da semana
+        '%d de %B de %Y'       # Sem dia da semana
+    ]
+
+    for formato in formatos:
+        try:
+            return datetime.strptime(data_str, formato)
+        except ValueError:
+            pass  # Tentar o próximo formato
+
+    logging.warning(f"Erro ao converter data: {data_str}")
+    return None
+
 # Função para verificar se a data está no intervalo especificado
 def is_date_in_range(date_str, start_date, end_date):
     try:
-        date = datetime.strptime(date_str, "%A, %d de %B de %Y")
-        return start_date <= date <= end_date
+        date = converter_data(date_str)  # Usando a função de conversão de data
+        if date:
+            return start_date <= date <= end_date
     except Exception as e:
-        logging.warning(f"Erro ao converter data: {date_str}. Erro: {str(e)}")
-        return False
+        logging.warning(f"Erro ao verificar intervalo de data: {date_str}. Erro: {str(e)}")
+    return False
 
 # Função para verificar se a edição está no intervalo especificado
 def is_edition_in_range(edition, start_edition, end_edition):
@@ -126,6 +156,26 @@ def process_diarios_by_filter(start_date=None, end_date=None, start_edition=None
 
     return diarios_data
 
+# Função para criar um arquivo ZIP com os PDFs e a planilha
+def create_zip_with_results(diarios_data):
+    # Criar um arquivo ZIP na memória
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        # Adicionar os PDFs ao ZIP
+        for pdf_file in os.listdir(PDF_FOLDER):
+            pdf_path = os.path.join(PDF_FOLDER, pdf_file)
+            zip_file.write(pdf_path, os.path.relpath(pdf_path, PDF_FOLDER))
+
+        # Criar uma planilha com os dados e adicioná-la ao ZIP
+        df = pd.DataFrame(diarios_data)
+        excel_buffer = BytesIO()
+        df.to_excel(excel_buffer, index=False, engine="openpyxl")
+        excel_buffer.seek(0)
+        zip_file.writestr("diarios_boavista.xlsx", excel_buffer.read())
+
+    zip_buffer.seek(0)
+    return zip_buffer
+
 # Interface do Streamlit
 def main():
     st.title("Diários Oficiais de Boa Vista - Download e Consulta")
@@ -144,6 +194,15 @@ def main():
             st.success(f"Processamento concluído! {len(diarios)} diários encontrados.")
             st.write(diarios)
 
+            # Gerar o arquivo ZIP para download
+            zip_file = create_zip_with_results(diarios)
+            st.download_button(
+                label="Baixar Arquivo Compactado",
+                data=zip_file,
+                file_name="diarios_boavista.zip",
+                mime="application/zip"
+            )
+
     elif filtro == "Intervalo de Edições":
         start_edition = st.number_input("Edição inicial:", min_value=1, step=1)
         end_edition = st.number_input("Edição final:", min_value=1, step=1)
@@ -152,6 +211,15 @@ def main():
             diarios = process_diarios_by_filter(start_edition=start_edition, end_edition=end_edition)
             st.success(f"Processamento concluído! {len(diarios)} diários encontrados.")
             st.write(diarios)
+
+            # Gerar o arquivo ZIP para download
+            zip_file = create_zip_with_results(diarios)
+            st.download_button(
+                label="Baixar Arquivo Compactado",
+                data=zip_file,
+                file_name="diarios_boavista.zip",
+                mime="application/zip"
+            )
 
     st.write("Os PDFs baixados estão sendo salvos na pasta `Diarios_PDFs`.")
 
